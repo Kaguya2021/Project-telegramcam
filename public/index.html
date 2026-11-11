@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Camera Capture</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    font-family: system-ui, -apple-system, sans-serif;
+    max-width: 520px; margin: 0 auto; padding: 16px;
+    background: #0d0d0d; color: #eee;
+  }
+  h1 { font-size: 20px; margin: 8px 0 16px; }
+  video {
+    width: 100%; border-radius: 14px; background: #000;
+    margin-bottom: 12px; display: block;
+  }
+  button {
+    width: 100%; padding: 14px; margin: 6px 0;
+    border: none; border-radius: 12px;
+    font-size: 16px; font-weight: 600; cursor: pointer;
+    transition: opacity .15s;
+  }
+  button:disabled { opacity: .4; cursor: not-allowed; }
+  #btnStart { background: #2c6ef2; color: #fff; }
+  #btnPhoto { background: #e3511e; color: #fff; }
+  #btnVideo { background: #d92626; color: #fff; }
+  #btnVideo.recording { background: #ff9800; }
+  #status {
+    margin-top: 14px; padding: 12px;
+    background: #1a1a1a; border-radius: 10px;
+    font-size: 14px; white-space: pre-wrap; line-height: 1.4;
+  }
+  #info {
+    margin-top: 12px; padding: 12px;
+    background: #141414; border-radius: 10px;
+    font-size: 12px; color: #888;
+    white-space: pre-wrap; word-break: break-all;
+  }
+</style>
+</head>
+<body>
+
+<h1>📷 Захват камеры → Telegram</h1>
+
+<video id="preview" autoplay playsinline muted></video>
+
+<button id="btnStart">1. Разрешить камеру и микрофон</button>
+<button id="btnPhoto" disabled>2. Сделать снимок</button>
+<button id="btnVideo" disabled>3. Записать видео (10 сек)</button>
+
+<div id="status">Ожидание...</div>
+<div id="info">Сбор информации...</div>
+
+<script>
+const video = document.getElementById('preview');
+const btnStart = document.getElementById('btnStart');
+const btnPhoto = document.getElementById('btnPhoto');
+const btnVideo = document.getElementById('btnVideo');
+const statusEl = document.getElementById('status');
+const infoEl = document.getElementById('info');
+
+let stream = null;
+let mediaRecorder = null;
+let chunks = [];
+let recording = false;
+
+// ===== Информация об устройстве =====
+async function collectInfo() {
+  const info = {
+    userAgent: navigator.userAgent,
+    platform: navigator.platform || 'N/A',
+    language: navigator.language,
+    screen: `${screen.width}x${screen.height}`,
+    timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+  };
+  try {
+    const r = await fetch('https://api.ipify.org?format=json');
+    info.publicIP = (await r.json()).ip;
+  } catch { info.publicIP = 'недоступен'; }
+
+  infoEl.textContent = JSON.stringify(info, null, 2);
+  return info;
+}
+
+// ===== 1. Запуск камеры + микрофона =====
+btnStart.addEventListener('click', async () => {
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: 'user', width: { ideal: 1280 }, height: { ideal: 720 } },
+      audio: true
+    });
+    video.srcObject = stream;
+    btnStart.disabled = true;
+    btnPhoto.disabled = false;
+    btnVideo.disabled = false;
+    statusEl.textContent = '✅ Камера и микрофон разрешены.';
+  } catch (e) {
+    statusEl.textContent = '❌ ' + e.message +
+      '\n\nНужен HTTPS или localhost.';
+  }
+});
+
+// ===== 2. Снимок =====
+btnPhoto.addEventListener('click', async () => {
+  if (!stream) return;
+  btnPhoto.disabled = true;
+  statusEl.textContent = '⏳ Отправка снимка...';
+
+  const canvas = document.createElement('canvas');
+  canvas.width = video.videoWidth;
+  canvas.height = video.videoHeight;
+  canvas.getContext('2d').drawImage(video, 0, 0);
+
+  canvas.toBlob(async (blob) => {
+    if (!blob) { statusEl.textContent = '❌ Не удалось создать снимок'; btnPhoto.disabled = false; return; }
+
+    const info = await collectInfo();
+    const form = new FormData();
+    form.append('photo', blob, 'capture.jpg');
+    form.append('info', JSON.stringify(info));
+
+    try {
+      const res = await fetch('/upload-photo', { method: 'POST', body: form });
+      const data = await res.json();
+      statusEl.textContent = res.ok ? '✅ Снимок отправлен в Telegram!' : '❌ ' + (data.detail || data.error);
+    } catch (e) {
+      statusEl.textContent = '❌ ' + e.message;
+    } finally {
+      btnPhoto.disabled = false;
+    }
+  }, 'image/jpeg', 0.85);
+});
+
+// ===== 3. Видео 10 секунд =====
+btnVideo.addEventListener('click', () => {
+  if (!stream) return;
+
+  if (!recording) {
+    // Старт записи
+    chunks = [];
+    const mimeType = MediaRecorder.isTypeSupported('video/webm;codecs=vp9')
+      ? 'video/webm;codecs=vp9'
+      : MediaRecorder.isTypeSupported('video/mp4')
+        ? 'video/mp4'
+        : '';
+
+    mediaRecorder = new MediaRecorder(stream, {
+      ...(mimeType ? { mimeType } : {}),
+      videoBitsPerSecond: 800_000
+    });
+
+    mediaRecorder.ondataavailable = (e) => { if (e.data.size > 0) chunks.push(e.data); };
+
+    mediaRecorder.onstop = async () => {
+      const blob = new Blob(chunks, { type: mediaRecorder.mimeType || 'video/webm' });
+      statusEl.textContent = `⏳ Отправка видео (${(blob.size / 1024 / 1024).toFixed(2)} МБ)...`;
+
+      const info = await collectInfo();
+      const form = new FormData();
+      form.append('video', blob, 'capture.' + (blob.type.includes('mp4') ? 'mp4' : 'webm'));
+      form.append('info', JSON.stringify(info));
+
+      try {
+        const res = await fetch('/upload-video', { method: 'POST', body: form });
+        const data = await res.json();
+        statusEl.textContent = res.ok ? '✅ Видео отправлено в Telegram!' : '❌ ' + (data.detail || data.error);
+      } catch (e) {
+        statusEl.textContent = '❌ ' + e.message;
+      } finally {
+        btnVideo.disabled = false;
+        btnVideo.textContent = '3. Записать видео (10 сек)';
+        btnVideo.classList.remove('recording');
+      }
+    };
+
+    mediaRecorder.start();
+    recording = true;
+    btnVideo.textContent = '⏹ Идёт запись...';
+    btnVideo.classList.add('recording');
+    btnPhoto.disabled = true;   // блокируем снимок во время записи
+    statusEl.textContent = '🔴 Идёт запись видео (10 сек)...';
+
+    // Автостоп через 10 секунд
+    setTimeout(() => {
+      if (recording && mediaRecorder && mediaRecorder.state === 'recording') {
+        mediaRecorder.stop();
+        recording = false;
+      }
+    }, 10_000);
+
+  } else {
+    // Ручная остановка
+    if (mediaRecorder && mediaRecorder.state === 'recording') mediaRecorder.stop();
+    recording = false;
+  }
+});
+
+// Старт сбора информации
+collectInfo();
+</script>
+
+</body>
+</html>
