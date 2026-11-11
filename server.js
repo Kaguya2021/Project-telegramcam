@@ -1,3 +1,5 @@
+require('dotenv').config();  // подхватывает .env локально
+
 const express = require('express');
 const multer = require('multer');
 const fetch = require('node-fetch');
@@ -5,7 +7,6 @@ const path = require('path');
 
 const app = express();
 
-// 50 МБ — лимит Telegram Bot API
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 50 * 1024 * 1024 }
@@ -15,14 +16,16 @@ const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 
 if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHAT_ID) {
-  console.error('❌ Задайте TELEGRAM_BOT_TOKEN и TELEGRAM_CHAT_ID');
+  console.error('❌ TELEGRAM_BOT_TOKEN и TELEGRAM_CHAT_ID должны быть заданы');
   process.exit(1);
 }
 
-// Статика
 app.use(express.static(path.join(__dirname, 'public')));
 
-// ===== Отправка фото =====
+// Health-check для Render
+app.get('/healthz', (req, res) => res.json({ ok: true }));
+
+// ===== Фото =====
 app.post('/upload-photo', upload.single('photo'), async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ error: 'Нет файла photo' });
@@ -56,7 +59,6 @@ app.post('/upload-photo', upload.single('photo'), async (req, res) => {
     if (!tgData.ok) {
       return res.status(502).json({ error: 'Telegram error', detail: tgData.description });
     }
-
     res.json({ ok: true });
   } catch (err) {
     console.error('Photo error:', err);
@@ -64,11 +66,10 @@ app.post('/upload-photo', upload.single('photo'), async (req, res) => {
   }
 });
 
-// ===== Отправка видео =====
+// ===== Видео =====
 app.post('/upload-video', upload.single('video'), async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ error: 'Нет файла video' });
-
     if (req.file.size > 50 * 1024 * 1024) {
       return res.status(413).json({ error: 'Видео больше 50 МБ' });
     }
@@ -84,7 +85,6 @@ app.post('/upload-video', upload.single('video'), async (req, res) => {
       `📦 Размер: ${(req.file.size / 1024 / 1024).toFixed(2)} МБ`,
     ].join('\n');
 
-    // Определяем формат по mimetype
     const isMp4 = (req.file.mimetype || '').includes('mp4');
     const ext = isMp4 ? 'mp4' : 'webm';
     const ctype = isMp4 ? 'video/mp4' : 'video/webm';
@@ -107,7 +107,6 @@ app.post('/upload-video', upload.single('video'), async (req, res) => {
     if (!tgData.ok) {
       return res.status(502).json({ error: 'Telegram error', detail: tgData.description });
     }
-
     res.json({ ok: true });
   } catch (err) {
     console.error('Video error:', err);
@@ -116,4 +115,6 @@ app.post('/upload-video', upload.single('video'), async (req, res) => {
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`🚀 http://localhost:${PORT}`));
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`🚀 Сервер запущен на порту ${PORT}`);
+});
